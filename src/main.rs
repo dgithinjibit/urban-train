@@ -1,13 +1,12 @@
 use anyhow::{anyhow, Context, Result};
-use axum::{extract::State, http::StatusCode, response::Json, routing::get, Router};
+use axum::{extract::State, response::Json, routing::get, serve, Router};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Serialize;
 use std::{env, net::SocketAddr, sync::Arc, time::Duration};
-use tokio::{sync::RwLock, time};
-use tower_http::trace::TraceLayer;
-use tracing::{error, info, warn};
-use tracing_subscriber::{fmt, EnvFilter};
+use tokio::{net::TcpListener, sync::RwLock, time};
+use tracing::{info, warn};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Clone)]
 struct AppState {
@@ -53,6 +52,18 @@ struct StatusPayload {
     alert_sent: bool,
 }
 
+#[derive(Serialize)]
+struct ZScorePayload {
+    service: &'static str,
+    pair_a: String,
+    pair_b: String,
+    last_run: Option<DateTime<Utc>>,
+    last_ratio: Option<f64>,
+    last_zscore: Option<f64>,
+    last_error: Option<String>,
+    alert_sent: bool,
+}
+
 async fn ping() -> &'static str {
     "OK"
 }
@@ -66,6 +77,20 @@ async fn status(State(state): State<AppState>) -> Json<StatusPayload> {
         history_window: state.config.history_window,
         interval_minutes: state.config.interval_minutes,
         alert_threshold: state.config.alert_threshold,
+        last_run: snapshot.last_run,
+        last_ratio: snapshot.last_ratio,
+        last_zscore: snapshot.last_zscore,
+        last_error: snapshot.last_error.clone(),
+        alert_sent: snapshot.alert_sent,
+    })
+}
+
+async fn zscore(State(state): State<AppState>) -> Json<ZScorePayload> {
+    let snapshot = state.shared.read().await;
+    Json(ZScorePayload {
+        service: "transmillion",
+        pair_a: state.config.pair_a.clone(),
+        pair_b: state.config.pair_b.clone(),
         last_run: snapshot.last_run,
         last_ratio: snapshot.last_ratio,
         last_zscore: snapshot.last_zscore,
@@ -95,13 +120,15 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/ping", get(ping))
         .route("/status", get(status))
-        .route("/zscore", get(status))
-        .with_state(app_state)
-        .layer(TraceLayer::new_for_http());
+        .route("/zscore", get(zscore))
+        .with_state(app_state);
+
+    let listener = TcpListener::bind(config.bind_addr)
+        .await
+        .context("failed to bind socket")?;
 
     info!(%config.bind_addr, "starting HTTP server");
-    axum::Server::bind(&config.bind_addr)
-        .serve(app.into_make_service())
+    serve(listener, app)
         .await
         .context("server stopped unexpectedly")?;
 
@@ -156,10 +183,18 @@ async fn monitor_loop(state: AppState) {
     let interval = Duration::from_secs(state.config.interval_minutes * 60);
     loop {
         let run_at = Utc::now();
-        match run_cycle(&state).await {
+        let result = run_cycle(&state).await;
+
+        match result {
             Ok(_) => info!(timestamp = %run_at, "monitor cycle completed"),
-            Err(err) => warn!(error = %err, "monitor cycle failed"),
+            Err(err) => {
+                let mut snapshot = state.shared.write().await;
+                snapshot.last_run = Some(run_at);
+                snapshot.last_error = Some(err.to_string());
+                warn!(error = %err, "monitor cycle failed");
+            }
         }
+
         time::sleep(interval).await;
     }
 }
@@ -253,8 +288,6 @@ fn build_ratio_series(history_a: &[f64], history_b: &[f64]) -> Result<Vec<f64>> 
 
 struct ZScore {
     latest_ratio: f64,
-    mean: f64,
-    stddev: f64,
     zscore: f64,
 }
 
@@ -289,8 +322,6 @@ fn compute_zscore(ratios: &[f64], window: usize) -> Result<ZScore> {
 
     Ok(ZScore {
         latest_ratio,
-        mean,
-        stddev,
         zscore: (latest_ratio - mean) / stddev,
     })
 }
@@ -320,7 +351,6 @@ async fn send_telegram(config: &AppConfig, client: &Client, text: &str) -> Resul
     let payload = serde_json::json!({
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "MarkdownV2"
     });
 
     let response = client.post(url).json(&payload).send().await?;

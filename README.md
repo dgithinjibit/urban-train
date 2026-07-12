@@ -15,7 +15,7 @@ A Rust-based trading signal monitor designed for Render with a keep-alive endpoi
 - background monitor task fetches Binance 1h candle data for two symbols
 - computes a Z-score on the ratio series and detects threshold crossovers
 - optional Telegram alerting when a signal triggers
-- `GET /status` and `GET /zscore` return the latest monitoring state
+- `GET /status` returns full service and monitor state, and `GET /zscore` returns the latest ratio/z-score snapshot
 
 ## Environment variables
 
