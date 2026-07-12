@@ -1,7 +1,8 @@
 [package]
 name = "transmillion"
 version = "0.1.0"
-edition = "2021"\nauthors = [""]
+edition = "2021"
+authors = [""]
 description = "Rust trading monitor for Render with keep-alive and Telegram alerts"
 license = "MIT"
 
