@@ -244,7 +244,7 @@ async fn run_cycle(state: &AppState) -> Result<()> {
 
 async fn fetch_binance_history(client: &Client, symbol: &str, limit: usize) -> Result<Vec<f64>> {
     let url = format!(
-        "https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}",
+        "https://api.binance.us/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}",
         symbol = symbol,
         limit = limit.min(1000)
     );
