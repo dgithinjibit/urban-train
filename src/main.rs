@@ -250,14 +250,23 @@ async fn fetch_binance_history(client: &Client, symbol: &str, limit: usize) -> R
     );
 
     let response = client
-        .get(url)
+        .get(url.clone())
         .send()
         .await
-        .context("failed to fetch Binance klines")?
-        .error_for_status()
-        .context("Binance klines returned error status")?;
+        .context("failed to fetch Binance klines")?;
 
-    let raw: Vec<Vec<serde_json::Value>> = response.json().await?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read Binance response body")?;
+
+    if !status.is_success() {
+        return Err(anyhow!("Binance klines returned error status {}: {}", status, body));
+    }
+
+    let raw: Vec<Vec<serde_json::Value>> = serde_json::from_str(&body)
+        .context("invalid Binance kline payload")?;
     let closes = raw
         .into_iter()
         .map(|row| {
